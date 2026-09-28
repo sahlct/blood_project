@@ -1,0 +1,640 @@
+// Prisma Schema for Blood Donation Web Portal
+// Production-ready, indexed, scalable architecture
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// Enums
+// ----------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  TEMPORARILY_UNAVAILABLE
+  NOT_AVAILABLE
+  PENDING_VERIFICATION
+  INACTIVE
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_CORRECTION
+}
+
+enum DonationStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
+enum DonationType {
+  WHOLE_BLOOD
+  PLATELETS
+  PLASMA
+  DOUBLE_RED_CELLS
+}
+
+enum RequestUrgency {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum BloodRequestStatus {
+  PENDING
+  VERIFIED
+  ACTIVE
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum EventStatus {
+  DRAFT
+  UPCOMING
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum EventRegistrationStatus {
+  REGISTERED
+  ATTENDED
+  CANCELLED
+}
+
+enum ContactRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum NotificationType {
+  INFO
+  WARNING
+  SUCCESS
+  ALERT
+}
+
+// ----------------------------------------------------
+// Authentication & RBAC Models
+// ----------------------------------------------------
+
+model User {
+  id            String      @id @default(cuid())
+  email         String      @unique
+  passwordHash  String
+  name          String
+  phone         String?
+  avatar        String?
+  status        UserStatus  @default(ACTIVE)
+  emailVerified DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?
+
+  // Relations
+  userRoles       UserRole[]
+  memberProfile   MemberProfile?
+  donorProfile    DonorProfile?
+  notifications   Notification[]
+  auditLogs       AuditLog[]      @relation("UserAuditLogs")
+  createdDonations DonationRecord[] @relation("CreatedDonations")
+  createdRequests BloodRequest[]  @relation("CreatedBloodRequests")
+
+  @@index([email])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  displayName String
+  description String?
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@index([name])
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  name        String           @unique // e.g. "donors.view", "donations.create"
+  displayName String
+  category    String           // e.g. "Users", "Donors", "Settings"
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([name])
+  @@index([category])
+}
+
+model UserRole {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  assignedBy String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  assignedAt   DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+// ----------------------------------------------------
+// Geographic Models
+// ----------------------------------------------------
+
+model Country {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique // e.g. "IN"
+  phoneCode String?  // e.g. "+91"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  states State[]
+
+  @@index([code])
+}
+
+model State {
+  id        String   @id @default(cuid())
+  countryId String
+  name      String
+  code      String   // e.g. "KL"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  country   Country    @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  districts District[]
+
+  @@unique([countryId, code])
+  @@index([countryId])
+}
+
+model District {
+  id        String   @id @default(cuid())
+  stateId   String
+  name      String
+  code      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  state           State            @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  cities          City[]
+  donorProfiles   DonorProfile[]
+  donationCenters DonationCenter[]
+  donationEvents  DonationEvent[]
+  bloodRequests   BloodRequest[]
+
+  @@unique([stateId, name])
+  @@index([stateId])
+  @@index([name])
+}
+
+model City {
+  id         String   @id @default(cuid())
+  districtId String
+  name       String
+  postalCode String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  district        District         @relation(fields: [districtId], references: [id], onDelete: Cascade)
+  donorProfiles   DonorProfile[]
+  donationCenters DonationCenter[]
+  donationEvents  DonationEvent[]
+  bloodRequests   BloodRequest[]
+
+  @@index([districtId])
+  @@index([name])
+}
+
+// ----------------------------------------------------
+// Blood Group Master Data
+// ----------------------------------------------------
+
+model BloodGroup {
+  id             String   @id @default(cuid())
+  group          String   @unique // "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"
+  rhFactor       String   // "POSITIVE", "NEGATIVE"
+  antigen        String   // "A", "B", "AB", "O"
+  canDonateTo    String   // JSON string of groups e.g. '["A+", "AB+"]'
+  canReceiveFrom String   // JSON string of groups e.g. '["A+", "A-", "O+", "O-"]'
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  donorProfiles      DonorProfile[]
+  bloodRequests      BloodRequest[]
+  eventRegistrations EventRegistration[]
+  contactRequests    ContactRequest[]
+
+  @@index([group])
+}
+
+// ----------------------------------------------------
+// Profiles: Member & Donor Separation
+// ----------------------------------------------------
+
+model MemberProfile {
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  fullName                String
+  gender                  String?   // "MALE", "FEMALE", "OTHER"
+  dateOfBirth             DateTime?
+  phone                   String?
+  alternatePhone          String?
+  address                 String?
+  emergencyContactName    String?
+  emergencyContactPhone   String?
+  emergencyContactRelation String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phone])
+}
+
+model DonorProfile {
+  id                       String             @id @default(cuid())
+  userId                   String             @unique
+  bloodGroupId             String
+  districtId               String
+  cityId                   String?
+  locality                 String?
+  address                  String?
+  availabilityStatus       AvailabilityStatus @default(AVAILABLE)
+  verificationStatus       VerificationStatus @default(PENDING)
+  publicProfileEnabled     Boolean            @default(true)
+  showPhonePublicly        Boolean            @default(false)
+  lastDonationDate         DateTime?
+  nextEligibleDonationDate DateTime?
+  isEligible               Boolean            @default(true)
+  totalDonations           Int                @default(0)
+  consentGiven             Boolean            @default(true)
+  rejectionReason          String?
+  verifiedAt               DateTime?
+  verifiedById             String?
+  internalNotes            String?
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+  deletedAt                DateTime?
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bloodGroup      BloodGroup       @relation(fields: [bloodGroupId], references: [id])
+  district        District         @relation(fields: [districtId], references: [id])
+  city            City?            @relation(fields: [cityId], references: [id])
+  donationRecords DonationRecord[]
+  contactRequests ContactRequest[]
+  eventRegistrations EventRegistration[]
+  consentRecords  ConsentRecord[]
+
+  @@index([bloodGroupId])
+  @@index([districtId])
+  @@index([cityId])
+  @@index([availabilityStatus])
+  @@index([verificationStatus])
+  @@index([isEligible])
+  @@index([nextEligibleDonationDate])
+  @@index([publicProfileEnabled])
+  @@index([deletedAt])
+  // Composite index for fast public directory searches
+  @@index([publicProfileEnabled, verificationStatus, availabilityStatus, districtId, bloodGroupId])
+}
+
+// ----------------------------------------------------
+// Donation Center, Event & Registration
+// ----------------------------------------------------
+
+model DonationCenter {
+  id             String   @id @default(cuid())
+  name           String
+  districtId     String
+  cityId         String?
+  address        String
+  phone          String
+  email          String?
+  operatingHours String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  district        District         @relation(fields: [districtId], references: [id])
+  city            City?            @relation(fields: [cityId], references: [id])
+  donationRecords DonationRecord[]
+
+  @@index([districtId])
+}
+
+model DonationEvent {
+  id              String      @id @default(cuid())
+  title           String
+  slug            String      @unique
+  description     String
+  bannerImage     String?
+  venue           String
+  districtId      String
+  cityId          String?
+  address         String
+  startDate       DateTime
+  endDate         DateTime
+  targetUnits     Int         @default(50)
+  registeredCount Int         @default(0)
+  organizerName   String
+  organizerPhone  String
+  organizerEmail  String?
+  status          EventStatus @default(UPCOMING)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  district           District            @relation(fields: [districtId], references: [id])
+  city               City?               @relation(fields: [cityId], references: [id])
+  registrations      EventRegistration[]
+  donationRecords    DonationRecord[]
+
+  @@index([slug])
+  @@index([status])
+  @@index([districtId])
+  @@index([startDate])
+}
+
+model EventRegistration {
+  id             String                  @id @default(cuid())
+  eventId        String
+  donorProfileId String?
+  fullName       String
+  phone          String
+  email          String
+  bloodGroupId   String
+  status         EventRegistrationStatus @default(REGISTERED)
+  registeredAt   DateTime                @default(now())
+
+  event        DonationEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  donorProfile DonorProfile? @relation(fields: [donorProfileId], references: [id])
+  bloodGroup   BloodGroup    @relation(fields: [bloodGroupId], references: [id])
+
+  @@index([eventId])
+  @@index([donorProfileId])
+  @@index([phone])
+}
+
+// ----------------------------------------------------
+// Donation Records
+// ----------------------------------------------------
+
+model DonationRecord {
+  id               String         @id @default(cuid())
+  donorProfileId   String
+  donationCenterId String?
+  donationEventId  String?
+  donationDate     DateTime
+  donationType     DonationType   @default(WHOLE_BLOOD)
+  unitsDonated     Float          @default(1.0)
+  status           DonationStatus @default(COMPLETED)
+  notes            String?
+  createdById      String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  donorProfile   DonorProfile    @relation(fields: [donorProfileId], references: [id], onDelete: Cascade)
+  donationCenter DonationCenter? @relation(fields: [donationCenterId], references: [id])
+  donationEvent  DonationEvent?  @relation(fields: [donationEventId], references: [id])
+  createdBy      User?           @relation("CreatedDonations", fields: [createdById], references: [id])
+
+  @@index([donorProfileId])
+  @@index([donationDate])
+  @@index([status])
+}
+
+// ----------------------------------------------------
+// Blood Requests (Emergency Requirements)
+// ----------------------------------------------------
+
+model BloodRequest {
+  id              String             @id @default(cuid())
+  referenceNumber String             @unique // e.g. "REQ-2026-0001"
+  patientName     String
+  bloodGroupId    String
+  unitsRequired   Int                @default(1)
+  urgency         RequestUrgency     @default(HIGH)
+  requiredDate    DateTime
+  hospitalName    String
+  hospitalAddress String?
+  districtId      String
+  cityId          String?
+  contactPerson   String
+  contactPhone    String
+  contactEmail    String?
+  notes           String?
+  status          BloodRequestStatus @default(ACTIVE)
+  publicVisible   Boolean            @default(true)
+  verifiedAt      DateTime?
+  verifiedById    String?
+  createdById     String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  bloodGroup BloodGroup @relation(fields: [bloodGroupId], references: [id])
+  district   District   @relation(fields: [districtId], references: [id])
+  city       City?      @relation(fields: [cityId], references: [id])
+  createdBy  User?      @relation("CreatedBloodRequests", fields: [createdById], references: [id])
+
+  @@index([referenceNumber])
+  @@index([bloodGroupId])
+  @@index([districtId])
+  @@index([urgency])
+  @@index([status])
+  @@index([publicVisible])
+  @@index([requiredDate])
+}
+
+// ----------------------------------------------------
+// Privacy-First Contact Requests
+// ----------------------------------------------------
+
+model ContactRequest {
+  id             String               @id @default(cuid())
+  donorProfileId String
+  requesterName  String
+  requesterPhone String
+  requesterEmail String
+  patientName    String
+  hospitalName   String
+  bloodGroupId   String
+  unitsRequired  Int                  @default(1)
+  requiredDate   DateTime
+  message        String?
+  status         ContactRequestStatus @default(PENDING)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  donorProfile DonorProfile @relation(fields: [donorProfileId], references: [id], onDelete: Cascade)
+  bloodGroup   BloodGroup   @relation(fields: [bloodGroupId], references: [id])
+
+  @@index([donorProfileId])
+  @@index([status])
+}
+
+// ----------------------------------------------------
+// Consent & Legal Records
+// ----------------------------------------------------
+
+model ConsentRecord {
+  id             String   @id @default(cuid())
+  donorProfileId String?
+  ipAddress      String?
+  consentType    String   // "TERMS_OF_SERVICE", "PRIVACY_POLICY", "DIRECTORY_LISTING"
+  agreed         Boolean  @default(true)
+  timestamp      DateTime @default(now())
+
+  donorProfile DonorProfile? @relation(fields: [donorProfileId], references: [id], onDelete: Cascade)
+
+  @@index([donorProfileId])
+  @@index([consentType])
+}
+
+// ----------------------------------------------------
+// System Settings & Configuration
+// ----------------------------------------------------
+
+model ApplicationSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String   @db.Text
+  group       String   @default("GENERAL") // "GENERAL", "ELIGIBILITY", "SECURITY", "NOTIFICATIONS"
+  description String?
+  isPublic    Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+  @@index([group])
+}
+
+// ----------------------------------------------------
+// Audit Logging
+// ----------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  actorName String
+  actorEmail String
+  action    String   // e.g. "USER_LOGIN", "DONOR_APPROVED", "DONATION_RECORDED"
+  entity    String   // e.g. "DonorProfile", "DonationRecord", "Role"
+  entityId  String?
+  details   String?  @db.Text // JSON string
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User? @relation("UserAuditLogs", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+// ----------------------------------------------------
+// In-App Notifications
+// ----------------------------------------------------
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  link      String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+}
+
+// ----------------------------------------------------
+// Lightweight Content Management
+// ----------------------------------------------------
+
+model ContentPage {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  title           String
+  content         String   @db.Text
+  metaTitle       String?
+  metaDescription String?
+  isPublished     Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+
+  @@index([slug])
+}
+
+model FaqItem {
+  id        String   @id @default(cuid())
+  question  String
+  answer    String   @db.Text
+  category  String   @default("General")
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([sortOrder])
+}
